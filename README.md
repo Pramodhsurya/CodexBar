@@ -136,7 +136,7 @@ See [CLI configuration](docs/cli-configuration.md) for the full flow.
 - [LiteLLM](docs/litellm.md) — Virtual key + proxy URL for personal and team budget/spend tracking.
 - [Deepgram](docs/deepgram.md) — API key usage summaries across speech, agent, token, and TTS metrics.
 - [Poe](docs/poe.md) — API key for current point balance and recent points history.
-- [Hugging Face](docs/huggingface.md) — User access token for personal Inference Providers usage, plan, and subscription renewal date.
+- [Hugging Face](docs/huggingface.md) — User access token for personal Inference Providers usage, plan, and subscription renewal date; optional browser sign-in adds credits available.
 - [Chutes](docs/chutes.md) — API key for subscription usage, rolling and monthly quota windows, and pay-as-you-go quotas.
 - [Neuralwatt](docs/neuralwatt.md) — API key for subscription kWh usage and prepaid credit balance.
 - [ZenMux](docs/zenmux.md) — Management API key for rolling five-hour and seven-day quota windows plus PAYG balance.

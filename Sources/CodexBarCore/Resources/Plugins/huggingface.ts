@@ -20,6 +20,10 @@ type HuggingFaceUsage = {
   periods?: unknown;
 };
 
+type HuggingFaceBillingPeriodResponse = {
+  period?: unknown;
+};
+
 defineProvider({
   id: "huggingface",
   name: "Hugging Face",
@@ -71,6 +75,27 @@ defineProvider({
       } catch (error) {
         void error;
         throw ctx.fail.parseFailure(`Hugging Face ${operation} response was not valid JSON.`);
+      }
+    }
+
+    async function getJSONSoft(url: string, operation: string): Promise<unknown | null> {
+      let response: CodexBarHTTPTextResponse;
+      try {
+        response = await ctx.http.get(url);
+      } catch (error) {
+        ctx.log(`Hugging Face ${operation} network error (soft): ${(error as Error)?.message || String(error)}`);
+        return null;
+      }
+      if (response.status < 200 || response.status >= 300) {
+        ctx.log(`Hugging Face ${operation} returned HTTP ${response.status} (soft).`);
+        return null;
+      }
+      try {
+        return JSON.parse(response.bodyText) as unknown;
+      } catch (error) {
+        void error;
+        ctx.log(`Hugging Face ${operation} response was not valid JSON (soft).`);
+        return null;
       }
     }
 
@@ -147,9 +172,34 @@ defineProvider({
     const billingMode = optionalTitleCaseString(account.billingMode, "identity response billingMode");
 
     const now = ctx.date.now();
-    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-    const startDate = monthStart.toISOString();
+    const calendarMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const maxPeriodAgeMs = 70 * 24 * 60 * 60 * 1000;
+    let periodStart = calendarMonthStart;
+    let usedRealPeriod = false;
+    const periodPayload = await getJSONSoft(
+      "https://huggingface.co/api/settings/billing/usage",
+      "billing period request",
+    );
+    if (periodPayload && typeof periodPayload === "object" && !Array.isArray(periodPayload)) {
+      const periodResponse = periodPayload as HuggingFaceBillingPeriodResponse;
+      const period = periodResponse.period;
+      if (period && typeof period === "object" && !Array.isArray(period)) {
+        const rawStart = (period as { periodStart?: unknown }).periodStart;
+        if (typeof rawStart === "string" && rawStart.trim()) {
+          const parsed = new Date(rawStart);
+          const parsedTime = parsed.getTime();
+          if (Number.isFinite(parsedTime) && parsedTime <= now.getTime() &&
+              now.getTime() - parsedTime <= maxPeriodAgeMs) {
+            periodStart = parsed;
+            usedRealPeriod = true;
+          }
+        }
+      }
+    }
+
+    const startDate = periodStart.toISOString();
     const endDate = now.toISOString();
+    const usagePeriodLabel = usedRealPeriod ? "Current period" : "Current month";
     const usageURL =
       "https://huggingface.co/api/settings/billing/usage-by-inference-session" +
       `?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`;
@@ -201,9 +251,9 @@ defineProvider({
       { label: "Username", value: username },
       { label: "Requests", value: ctx.format.number(requestCount, { maximumFractionDigits: 0 }) },
       {
-        label: "API-reported usage",
+        label: "Credits used",
         value: `${currency} ${usageCost.toFixed(2)}`,
-        secondaryValue: "Current month",
+        secondaryValue: usagePeriodLabel,
       },
     ];
     const usageSection: CodexBarDetailSection = { title: "Inference Providers", rows };
@@ -226,7 +276,7 @@ defineProvider({
     const subscriptionSection: CodexBarDetailSection = { title: "Subscription", rows: subscriptionRows };
 
     return {
-      cost: { used: usageCost, currency, period: "Current month usage" },
+      cost: { used: usageCost, currency, period: `${usagePeriodLabel} usage` },
       identity: { accountID: username, loginMethod: plan },
       subscriptionRenewsAt: isRenewingSubscription ? periodEnd : undefined,
       dataConfidence: "exact",

@@ -36,7 +36,7 @@ struct HuggingFaceProviderTests {
         #expect(descriptor.metadata.defaultEnabled == false)
         #expect(descriptor.metadata.widgetSelectable == false)
         #expect(descriptor.metadata.dashboardURL == "https://huggingface.co/settings/billing")
-        #expect(descriptor.fetchPlan.sourceModes == [.auto, .api])
+        #expect(descriptor.fetchPlan.sourceModes == [.auto, .web, .api])
         #expect(descriptor.cli.aliases == ["hf"])
         #expect(descriptor.menuBarMetrics == .automaticOnly)
         #expect(descriptor.branding.iconResourceName == "ProviderIcon-huggingface")
@@ -45,21 +45,45 @@ struct HuggingFaceProviderTests {
         #expect(implementation is HuggingFaceProviderImplementation)
     }
 
+    @Test
+    func `auto mode resolves the web strategy before the token strategy`() async {
+        let descriptor = HuggingFaceProviderDescriptor.makeDescriptor(transport: ProviderHTTPTransportStub { _ in
+            throw URLError(.badURL)
+        })
+        let context = Self.context(
+            environment: [HuggingFaceSettingsReader.apiKeyEnvironmentKey: "hf_fixture"],
+            sourceMode: .auto)
+        let strategies = await descriptor.fetchPlan.pipeline.resolveStrategies(context)
+
+        #expect(strategies.map(\.id) == ["huggingface.web", "huggingface.js"])
+        #expect(strategies.map(\.kind) == [.web, .apiToken])
+    }
+
+    @Test
+    func `web strategy availability tracks the cookie cache`() async {
+        KeychainCacheStore.setTestStoreForTesting(true)
+        defer {
+            CookieHeaderCache.clear(provider: .huggingface)
+            KeychainCacheStore.setTestStoreForTesting(false)
+        }
+
+        let strategy = HuggingFaceWebFetchStrategy()
+        let context = Self.context(environment: [:])
+
+        #expect(await strategy.isAvailable(context) == false)
+
+        CookieHeaderCache.store(provider: .huggingface, cookieHeader: "token=abc", sourceLabel: "Chrome")
+        #expect(await strategy.isAvailable(context))
+    }
+
     @Test @MainActor
-    func `app availability accepts environment or stored tokens and rejects missing tokens`() {
+    func `app availability defaults to true like other optional cookie capable providers`() {
+        // Matches Qoder/MiniMax: with a cookie fallback available, this provider no longer hard-requires
+        // a token to appear configurable. The fetch pipeline (not this app-level check) still classifies
+        // whether a credential is actually usable at fetch time.
         let settings = testSettingsStore(suiteName: "HuggingFaceProviderTests-availability")
         let implementation = HuggingFaceProviderImplementation()
 
-        #expect(implementation.isAvailable(context: ProviderAvailabilityContext(
-            provider: .huggingface,
-            settings: settings,
-            environment: [HuggingFaceSettingsReader.apiKeyEnvironmentKey: "hf_environment"])))
-        #expect(!implementation.isAvailable(context: ProviderAvailabilityContext(
-            provider: .huggingface,
-            settings: settings,
-            environment: [:])))
-
-        settings[providerConfig: .huggingface, field: .apiKey] = "hf_stored"
         #expect(implementation.isAvailable(context: ProviderAvailabilityContext(
             provider: .huggingface,
             settings: settings,
@@ -73,7 +97,8 @@ struct HuggingFaceProviderTests {
             throw URLError(.badURL)
         })
         let missingContext = Self.context(environment: [:])
-        let strategy = try #require(await descriptor.fetchPlan.pipeline.resolveStrategies(missingContext).first)
+        let strategies = await descriptor.fetchPlan.pipeline.resolveStrategies(missingContext)
+        let strategy = try #require(strategies.first { $0.id == "huggingface.js" })
 
         #expect(strategy.id == "huggingface.js")
         #expect(strategy.kind == .apiToken)
@@ -103,6 +128,8 @@ struct HuggingFaceProviderTests {
                 return Self.response(
                     url: url,
                     body: #"{"name":"octocat","isPro":true,"periodEnd":1801440000,"billingMode":"prepaid"}"#)
+            case "/api/settings/billing/usage":
+                return Self.response(url: url, body: "{}", statusCode: 404)
             case "/api/settings/billing/usage-by-inference-session":
                 try Self.expectBoundedCurrentMonthQuery(url)
                 return Self.response(url: url, body: Self.usageFixture)
@@ -120,7 +147,7 @@ struct HuggingFaceProviderTests {
         #expect(result.strategyID == "huggingface.js")
         #expect(result.usage.providerCost?.used == 3.75)
         #expect(result.usage.subscriptionRenewsAt == Date(timeIntervalSince1970: 1_801_440_000))
-        #expect(await transport.requests().count == 2)
+        #expect(await transport.requests().count == 3)
     }
 
     @Test
@@ -144,6 +171,8 @@ struct HuggingFaceProviderTests {
                     body: #"""
                     {"name":"octocat","fullname":"Octo Cat","isPro":true,"periodEnd":1801440000,"billingMode":"prepaid"}
                     """#)
+            case "/api/settings/billing/usage":
+                return Self.response(url: url, body: "{}", statusCode: 404)
             case "/api/settings/billing/usage-by-inference-session":
                 try Self.expectCurrentMonthQuery(url)
                 return Self.response(url: url, body: Self.usageFixture)
@@ -157,7 +186,7 @@ struct HuggingFaceProviderTests {
             secrets: ["HF_TOKEN": "hf_fixture"],
             now: Self.now)
 
-        #expect(await transport.requests().count == 2)
+        #expect(await transport.requests().count == 3)
         #expect(snapshot.primary == nil)
         #expect(snapshot.secondary == nil)
         #expect(snapshot.tertiary == nil)
@@ -169,7 +198,8 @@ struct HuggingFaceProviderTests {
         #expect(snapshot.identity?.accountID == "octocat")
         #expect(snapshot.identity?.loginMethod == "PRO")
         #expect(snapshot.detailRow(label: "Requests")?.value == "9")
-        #expect(snapshot.detailRow(label: "API-reported usage")?.value == "USD 3.75")
+        #expect(snapshot.detailRow(label: "Credits used")?.value == "USD 3.75")
+        #expect(snapshot.detailRow(label: "Credits used")?.secondaryValue == "Current month")
         #expect(snapshot.details.first?.chart?.points.map(\.value) == [3.75])
         #expect(snapshot.dataConfidence == .exact)
         #expect(snapshot.subscriptionRenewsAt == Date(timeIntervalSince1970: 1_801_440_000))
@@ -179,6 +209,64 @@ struct HuggingFaceProviderTests {
         #expect(snapshot.detailRow(label: "Renews")?.value == "2027-02-01")
         #expect(snapshot.details.count == 2)
         #expect(snapshot.details.last?.title == "Subscription")
+    }
+
+    @Test
+    func `real billing period start overrides the calendar month window`() async throws {
+        let transport = ProviderHTTPTransportStub { request in
+            let url = try #require(request.url)
+            switch url.path {
+            case "/api/whoami-v2":
+                return Self.response(url: url, body: Self.identityFixture)
+            case "/api/settings/billing/usage":
+                return Self.response(
+                    url: url,
+                    body: #"""
+                    {"period":{"periodStart":"2027-01-05T00:00:00.000Z","periodEnd":"2027-02-01T00:00:00.000Z"}}
+                    """#)
+            case "/api/settings/billing/usage-by-inference-session":
+                let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+                let items = Dictionary(
+                    uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value) })
+                #expect(items["startDate"] == "2027-01-05T00:00:00.000Z")
+                #expect(items["endDate"] == "2027-01-15T08:00:00.000Z")
+                return Self.response(url: url, body: Self.usageFixture)
+            default:
+                Issue.record("Unexpected Hugging Face request: \(url.absoluteString)")
+                throw URLError(.badURL)
+            }
+        }
+        let snapshot = try await Self.runtime(transport: transport).fetchUsage(
+            secrets: ["HF_TOKEN": "hf_fixture"],
+            now: Self.now)
+
+        #expect(snapshot.providerCost?.period == "Current period usage")
+        #expect(snapshot.detailRow(label: "Credits used")?.secondaryValue == "Current period")
+    }
+
+    @Test(arguments: [
+        #"{"period":{"periodStart":"2020-01-01T00:00:00.000Z"}}"#, // more than 70 days before `now`
+        #"{"period":{"periodStart":"2027-02-01T00:00:00.000Z"}}"#, // after `now`
+        #"{"period":{"periodStart":"not-a-date"}}"#,
+        #"{"period":{}}"#,
+        #"{}"#,
+        "not-json",
+    ])
+    func `unusable billing period responses fall back to the calendar month without failing the fetch`(
+        periodBody: String) async throws
+    {
+        let snapshot = try await Self.fetch(periodBody: periodBody, periodStatus: 200)
+
+        #expect(snapshot.providerCost?.period == "Current month usage")
+        #expect(snapshot.detailRow(label: "Credits used")?.secondaryValue == "Current month")
+    }
+
+    @Test
+    func `billing period endpoint failure falls back to the calendar month without failing the fetch`() async throws {
+        let snapshot = try await Self.fetch(periodStatus: 500)
+
+        #expect(snapshot.providerCost?.period == "Current month usage")
+        #expect(snapshot.detailRow(label: "Credits used")?.secondaryValue == "Current month")
     }
 
     @Test
@@ -343,6 +431,8 @@ struct HuggingFaceProviderTests {
     private static func fetch(
         identityBody: String = identityFixture,
         identityStatus: Int = 200,
+        periodBody: String = "{}",
+        periodStatus: Int = 404,
         usageBody: String = usageFixture,
         usageStatus: Int = 200,
         errorBody: String = "{}") async throws -> UsageSnapshot
@@ -355,7 +445,12 @@ struct HuggingFaceProviderTests {
                     body: identityStatus == 200 ? identityBody : errorBody,
                     statusCode: identityStatus)
             }
-            try Self.expectCurrentMonthQuery(url)
+            if url.path == "/api/settings/billing/usage" {
+                return Self.response(url: url, body: periodBody, statusCode: periodStatus)
+            }
+            if periodStatus != 200 {
+                try Self.expectCurrentMonthQuery(url)
+            }
             return Self.response(
                 url: url,
                 body: usageStatus == 200 ? usageBody : errorBody,
@@ -370,10 +465,13 @@ struct HuggingFaceProviderTests {
         try ProviderPluginRuntime(bundledPlugin: "huggingface", transport: transport)
     }
 
-    private static func context(environment: [String: String]) -> ProviderFetchContext {
+    private static func context(
+        environment: [String: String],
+        sourceMode: ProviderSourceMode = .api) -> ProviderFetchContext
+    {
         ProviderFetchContext(
             runtime: .app,
-            sourceMode: .api,
+            sourceMode: sourceMode,
             includeCredits: false,
             webTimeout: 1,
             webDebugDumpHTML: false,

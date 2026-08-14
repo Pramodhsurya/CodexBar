@@ -91,7 +91,7 @@ scan fails, while provider/account configuration changes replace obsolete result
 | Wayfinder | Local gateway URL → `/healthz`, `/v1/savings`, `/router/models`, `/metrics` for health, routing split, savings, and decision latency (`api`). |
 | LiteLLM | API key + base URL → `/key/info`, then `/user/info` or `/team/info` budget usage (`api`). |
 | Deepgram | API key → project discovery and usage breakdown API (`api`). |
-| Hugging Face | User access token from config or `HF_TOKEN` → personal Inference Providers billing usage plus plan/subscription info (`api`). |
+| Hugging Face | User access token from config or `HF_TOKEN` (`api`), optionally with browser sign-in for credits available and exact current-period usage (`web`). |
 | Chutes | API key from config/env → subscription usage and quota API (`api`). |
 | Neuralwatt | API key from config/env → `/v1/quota` subscription kWh usage and prepaid balance (`api`). |
 | ZenMux | Management API key from config/env → five-hour and seven-day quota windows plus PAYG balance (`api`). |
@@ -578,13 +578,16 @@ JavaScriptCore is the macOS rollback engine. The committed `.js` is generated fr
 - Details: `docs/poe.md`.
 
 ## Hugging Face
-- User access token from `~/.codexbar/config.json` or `HF_TOKEN`.
-- Reads personal account identity, PRO status, billing mode, and billing-period end from `GET /api/whoami-v2`, and
-  current-month Inference Providers usage cost from `GET /api/settings/billing/usage-by-inference-session`, bounded by
-  explicit UTC month dates.
-- Shows exact aggregation of the API-returned `costCents` and request totals. This amount is independent of separately
-  applied included credits and does not establish the final payable invoice. CodexBar does not infer remaining balance,
-  quota percentages, or a subscription price.
+- User access token from `~/.codexbar/config.json` or `HF_TOKEN` (`api`), optionally combined with browser sign-in
+  (`web`) for two figures the token API cannot provide: prepaid credits available and exact current-period usage.
+  `.auto` prefers `web` when a browser session is available and falls back to `api`.
+- Token path reads identity/plan/billing-mode from `GET /api/whoami-v2`, the real billing-period start (best-effort,
+  falls back to calendar month) from `GET /api/settings/billing/usage`, and Inference Providers usage cost from
+  `GET /api/settings/billing/usage-by-inference-session`.
+- Web path fetches the account's own `huggingface.co/settings/billing` page with its session cookie and parses only
+  the credit balance and current-period usage total; payment/invoicing details on that page are never parsed.
+- Shows exact aggregation of the returned values. This amount is independent of separately applied included credits and
+  does not establish the final payable invoice. CodexBar does not infer quota percentages or a subscription price.
 - Subscription section shows plan (Free/PRO), billing mode (prepaid/postpaid), and the billing period end date
   ("Renews" for PRO, "Billing period ends" otherwise, since HF's API does not expose a cancellation flag).
 - Organization billing is not included in this provider version.
