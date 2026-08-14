@@ -8,7 +8,7 @@ read_when:
 
 # Providers
 
-CodexBar currently registers 69 provider IDs. Some companies expose multiple surfaces, such as Codex vs OpenAI API or
+CodexBar currently registers 70 provider IDs. Some companies expose multiple surfaces, such as Codex vs OpenAI API or
 OpenCode vs OpenCode Go, because the auth source and quota shape differ.
 
 ## Fetch strategies (current)
@@ -91,6 +91,7 @@ scan fails, while provider/account configuration changes replace obsolete result
 | Wayfinder | Local gateway URL → `/healthz`, `/v1/savings`, `/router/models`, `/metrics` for health, routing split, savings, and decision latency (`api`). |
 | LiteLLM | API key + base URL → `/key/info`, then `/user/info` or `/team/info` budget usage (`api`). |
 | Deepgram | API key → project discovery and usage breakdown API (`api`). |
+| Hugging Face | User access token from config or `HF_TOKEN` → personal Inference Providers billing usage (`api`). |
 | Chutes | API key from config/env → subscription usage and quota API (`api`). |
 | Neuralwatt | API key from config/env → `/v1/quota` subscription kWh usage and prepaid balance (`api`). |
 | ZenMux | Management API key from config/env → five-hour and seven-day quota windows plus PAYG balance (`api`). |
@@ -575,6 +576,16 @@ JavaScriptCore is the macOS rollback engine. The committed `.js` is generated fr
 - Reads the current point balance and recent points history from Poe's official usage API.
 - History failures are non-fatal; the current balance remains available.
 - Details: `docs/poe.md`.
+
+## Hugging Face
+- User access token from `~/.codexbar/config.json` or `HF_TOKEN`.
+- Reads personal account identity from `GET /api/whoami-v2` and current-month Inference Providers usage cost from
+  `GET /api/settings/billing/usage-by-inference-session`, bounded by explicit UTC month dates.
+- Shows exact aggregation of the API-returned `costCents` and request totals. This amount is independent of separately
+  applied included credits and does not establish the final payable invoice. CodexBar does not infer remaining balance,
+  quota percentages, or reset dates.
+- Organization billing is not included in this provider version.
+- Details: `docs/huggingface.md`.
 
 ## Chutes
 - API key from config or `CHUTES_API_KEY`.
