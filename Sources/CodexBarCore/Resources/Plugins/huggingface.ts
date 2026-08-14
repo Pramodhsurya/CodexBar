@@ -1,6 +1,8 @@
 type HuggingFaceIdentity = {
   name?: unknown;
   isPro?: unknown;
+  periodEnd?: unknown;
+  billingMode?: unknown;
 };
 
 type HuggingFaceSession = {
@@ -86,6 +88,48 @@ defineProvider({
       return value;
     }
 
+    function optionalEpochSecondsDate(value: unknown, path: string): Date | null {
+      if (value === null || value === undefined) {
+        return null;
+      }
+      if (typeof value === "number") {
+        if (!Number.isFinite(value) || value <= 0) {
+          return null;
+        }
+        const date = new Date(value * 1000);
+        if (!Number.isFinite(date.getTime())) {
+          throw ctx.fail.parseFailure(`Hugging Face ${path} is not a valid Unix timestamp.`);
+        }
+        return date;
+      }
+      if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (!trimmed) {
+          return null;
+        }
+        const date = new Date(trimmed);
+        if (!Number.isFinite(date.getTime())) {
+          throw ctx.fail.parseFailure(`Hugging Face ${path} is not a valid date.`);
+        }
+        return date;
+      }
+      throw ctx.fail.parseFailure(`Hugging Face ${path} must be a Unix timestamp or date string.`);
+    }
+
+    function optionalTitleCaseString(value: unknown, path: string): string | null {
+      if (value === null || value === undefined) {
+        return null;
+      }
+      if (typeof value !== "string") {
+        throw ctx.fail.parseFailure(`Hugging Face ${path} must be a string.`);
+      }
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return null;
+      }
+      return trimmed.charAt(0).toUpperCase() + trimmed.slice(1).toLowerCase();
+    }
+
     const identityPayload = (await getJSON(
       "https://huggingface.co/api/whoami-v2",
       "identity request",
@@ -99,6 +143,8 @@ defineProvider({
     }
     const username = account.name.trim();
     const plan = account.isPro ? "PRO" : "Free";
+    const periodEnd = optionalEpochSecondsDate(account.periodEnd, "identity response periodEnd");
+    const billingMode = optionalTitleCaseString(account.billingMode, "identity response billingMode");
 
     const now = ctx.date.now();
     const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
@@ -153,7 +199,6 @@ defineProvider({
     const usageCost = costCents / 100;
     const rows: CodexBarDetailRow[] = [
       { label: "Username", value: username },
-      { label: "Plan", value: plan },
       { label: "Requests", value: ctx.format.number(requestCount, { maximumFractionDigits: 0 }) },
       {
         label: "API-reported usage",
@@ -161,16 +206,31 @@ defineProvider({
         secondaryValue: "Current month",
       },
     ];
-    const details: CodexBarDetailSection = { title: "Inference Providers", rows };
+    const usageSection: CodexBarDetailSection = { title: "Inference Providers", rows };
     if (chartPoints.length) {
-      details.chart = { kind: "bars", title: "Monthly usage", unit: currency, points: chartPoints };
+      usageSection.chart = { kind: "bars", title: "Monthly usage", unit: currency, points: chartPoints };
     }
+
+    const isRenewingSubscription = account.isPro === true && periodEnd !== null;
+    const subscriptionRows: CodexBarDetailRow[] = [{ label: "Plan", value: plan }];
+    if (billingMode) {
+      subscriptionRows.push({ label: "Billing", value: billingMode });
+    }
+    if (periodEnd) {
+      subscriptionRows.push({
+        label: isRenewingSubscription ? "Renews" : "Billing period ends",
+        value: periodEnd.toISOString().slice(0, 10),
+        secondaryValue: "UTC",
+      });
+    }
+    const subscriptionSection: CodexBarDetailSection = { title: "Subscription", rows: subscriptionRows };
 
     return {
       cost: { used: usageCost, currency, period: "Current month usage" },
       identity: { accountID: username, loginMethod: plan },
+      subscriptionRenewsAt: isRenewingSubscription ? periodEnd : undefined,
       dataConfidence: "exact",
-      details: [details],
+      details: [usageSection, subscriptionSection],
     };
   },
 });

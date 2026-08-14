@@ -100,7 +100,9 @@ struct HuggingFaceProviderTests {
             #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer hf_configured")
             switch url.path {
             case "/api/whoami-v2":
-                return Self.response(url: url, body: #"{"name":"octocat","isPro":true}"#)
+                return Self.response(
+                    url: url,
+                    body: #"{"name":"octocat","isPro":true,"periodEnd":1801440000,"billingMode":"prepaid"}"#)
             case "/api/settings/billing/usage-by-inference-session":
                 try Self.expectBoundedCurrentMonthQuery(url)
                 return Self.response(url: url, body: Self.usageFixture)
@@ -117,6 +119,7 @@ struct HuggingFaceProviderTests {
         #expect(result.sourceLabel == "api")
         #expect(result.strategyID == "huggingface.js")
         #expect(result.usage.providerCost?.used == 3.75)
+        #expect(result.usage.subscriptionRenewsAt == Date(timeIntervalSince1970: 1_801_440_000))
         #expect(await transport.requests().count == 2)
     }
 
@@ -136,7 +139,11 @@ struct HuggingFaceProviderTests {
             switch url.path {
             case "/api/whoami-v2":
                 #expect(url.query == nil)
-                return Self.response(url: url, body: #"{"name":"octocat","fullname":"Octo Cat","isPro":true}"#)
+                return Self.response(
+                    url: url,
+                    body: #"""
+                    {"name":"octocat","fullname":"Octo Cat","isPro":true,"periodEnd":1801440000,"billingMode":"prepaid"}
+                    """#)
             case "/api/settings/billing/usage-by-inference-session":
                 try Self.expectCurrentMonthQuery(url)
                 return Self.response(url: url, body: Self.usageFixture)
@@ -165,6 +172,13 @@ struct HuggingFaceProviderTests {
         #expect(snapshot.detailRow(label: "API-reported usage")?.value == "USD 3.75")
         #expect(snapshot.details.first?.chart?.points.map(\.value) == [3.75])
         #expect(snapshot.dataConfidence == .exact)
+        #expect(snapshot.subscriptionRenewsAt == Date(timeIntervalSince1970: 1_801_440_000))
+        #expect(snapshot.subscriptionExpiresAt == nil)
+        #expect(snapshot.detailRow(label: "Plan")?.value == "PRO")
+        #expect(snapshot.detailRow(label: "Billing")?.value == "Prepaid")
+        #expect(snapshot.detailRow(label: "Renews")?.value == "2027-02-01")
+        #expect(snapshot.details.count == 2)
+        #expect(snapshot.details.last?.title == "Subscription")
     }
 
     @Test
@@ -178,6 +192,71 @@ struct HuggingFaceProviderTests {
         #expect(snapshot.identity?.loginMethod == "Free")
         #expect(snapshot.detailRow(label: "Requests")?.value == "0")
         #expect(snapshot.details.first?.chart == nil)
+        #expect(snapshot.subscriptionRenewsAt == nil)
+        #expect(snapshot.detailRow(label: "Renews") == nil)
+    }
+
+    @Test
+    func `absent subscription fields stay a valid snapshot`() async throws {
+        let snapshot = try await Self.fetch(identityBody: #"{"name":"octocat","isPro":false}"#)
+
+        #expect(snapshot.subscriptionRenewsAt == nil)
+        #expect(snapshot.detailRow(label: "Billing") == nil)
+        #expect(snapshot.detailRow(label: "Renews") == nil)
+        #expect(snapshot.detailRow(label: "Billing period ends") == nil)
+        #expect(snapshot.providerCost?.used == 3.75)
+    }
+
+    @Test
+    func `ISO period end strings are accepted`() async throws {
+        let snapshot = try await Self.fetch(identityBody: #"""
+        {"name":"octocat","isPro":true,"periodEnd":"2027-02-01T00:00:00Z","billingMode":"prepaid"}
+        """#)
+
+        #expect(snapshot.subscriptionRenewsAt == Date(timeIntervalSince1970: 1_801_440_000))
+        #expect(snapshot.detailRow(label: "Renews")?.value == "2027-02-01")
+    }
+
+    @Test
+    func `non PRO period end is reported without claiming a renewal`() async throws {
+        let snapshot = try await Self.fetch(identityBody: #"{"name":"octocat","isPro":false,"periodEnd":1801440000}"#)
+
+        #expect(snapshot.subscriptionRenewsAt == nil)
+        #expect(snapshot.detailRow(label: "Billing period ends")?.value == "2027-02-01")
+        #expect(snapshot.detailRow(label: "Renews") == nil)
+    }
+
+    @Test
+    func `zero period end is treated as no subscription`() async throws {
+        let snapshot = try await Self.fetch(identityBody: #"{"name":"octocat","isPro":true,"periodEnd":0}"#)
+
+        #expect(snapshot.subscriptionRenewsAt == nil)
+        #expect(snapshot.detailRow(label: "Renews") == nil)
+        #expect(snapshot.detailRow(label: "Billing period ends") == nil)
+    }
+
+    @Test
+    func `unknown billing modes are displayed verbatim`() async throws {
+        let snapshot = try await Self
+            .fetch(identityBody: #"{"name":"octocat","isPro":false,"billingMode":"quarterly"}"#)
+
+        #expect(snapshot.detailRow(label: "Billing")?.value == "Quarterly")
+    }
+
+    @Test(arguments: [
+        #"{"name":"octocat","isPro":true,"periodEnd":"soon"}"#,
+        #"{"name":"octocat","isPro":true,"periodEnd":true}"#,
+        #"{"name":"octocat","isPro":true,"periodEnd":{}}"#,
+        #"{"name":"octocat","isPro":true,"periodEnd":1e15}"#,
+        #"{"name":"octocat","isPro":true,"billingMode":7}"#,
+    ])
+    func `malformed identity payloads are classified parse failures`(body: String) async throws {
+        do {
+            _ = try await Self.fetch(identityBody: body)
+            Issue.record("Expected Hugging Face identity parse failure")
+        } catch let error as ProviderFetchClassifiedError {
+            #expect(error.kind == .parseFailure)
+        }
     }
 
     @Test(arguments: [
@@ -262,6 +341,7 @@ struct HuggingFaceProviderTests {
     }
 
     private static func fetch(
+        identityBody: String = identityFixture,
         identityStatus: Int = 200,
         usageBody: String = usageFixture,
         usageStatus: Int = 200,
@@ -272,8 +352,7 @@ struct HuggingFaceProviderTests {
             if url.path == "/api/whoami-v2" {
                 return Self.response(
                     url: url,
-                    body: identityStatus == 200 ? #"{"name":"octocat","fullname":"Octo Cat","isPro":false}"# :
-                        errorBody,
+                    body: identityStatus == 200 ? identityBody : errorBody,
                     statusCode: identityStatus)
             }
             try Self.expectCurrentMonthQuery(url)
@@ -347,6 +426,10 @@ struct HuggingFaceProviderTests {
             headerFields: ["Content-Type": statusCode == 200 ? "application/json" : "text/html"]) ?? HTTPURLResponse()
         return (Data(body.utf8), response)
     }
+
+    private static let identityFixture = #"""
+    {"name":"octocat","fullname":"Octo Cat","isPro":false,"periodEnd":null,"billingMode":"postpaid","canPay":false}
+    """#
 
     private static let usageFixture = #"""
     {

@@ -91,7 +91,7 @@ scan fails, while provider/account configuration changes replace obsolete result
 | Wayfinder | Local gateway URL → `/healthz`, `/v1/savings`, `/router/models`, `/metrics` for health, routing split, savings, and decision latency (`api`). |
 | LiteLLM | API key + base URL → `/key/info`, then `/user/info` or `/team/info` budget usage (`api`). |
 | Deepgram | API key → project discovery and usage breakdown API (`api`). |
-| Hugging Face | User access token from config or `HF_TOKEN` → personal Inference Providers billing usage (`api`). |
+| Hugging Face | User access token from config or `HF_TOKEN` → personal Inference Providers billing usage plus plan/subscription info (`api`). |
 | Chutes | API key from config/env → subscription usage and quota API (`api`). |
 | Neuralwatt | API key from config/env → `/v1/quota` subscription kWh usage and prepaid balance (`api`). |
 | ZenMux | Management API key from config/env → five-hour and seven-day quota windows plus PAYG balance (`api`). |
@@ -579,11 +579,14 @@ JavaScriptCore is the macOS rollback engine. The committed `.js` is generated fr
 
 ## Hugging Face
 - User access token from `~/.codexbar/config.json` or `HF_TOKEN`.
-- Reads personal account identity from `GET /api/whoami-v2` and current-month Inference Providers usage cost from
-  `GET /api/settings/billing/usage-by-inference-session`, bounded by explicit UTC month dates.
+- Reads personal account identity, PRO status, billing mode, and billing-period end from `GET /api/whoami-v2`, and
+  current-month Inference Providers usage cost from `GET /api/settings/billing/usage-by-inference-session`, bounded by
+  explicit UTC month dates.
 - Shows exact aggregation of the API-returned `costCents` and request totals. This amount is independent of separately
   applied included credits and does not establish the final payable invoice. CodexBar does not infer remaining balance,
-  quota percentages, or reset dates.
+  quota percentages, or a subscription price.
+- Subscription section shows plan (Free/PRO), billing mode (prepaid/postpaid), and the billing period end date
+  ("Renews" for PRO, "Billing period ends" otherwise, since HF's API does not expose a cancellation flag).
 - Organization billing is not included in this provider version.
 - Details: `docs/huggingface.md`.
 
