@@ -76,6 +76,44 @@ struct HuggingFaceProviderTests {
         #expect(await strategy.isAvailable(context))
     }
 
+    @Test
+    func `auto mode does not silently replace stale web data with token data when the cached cookie expires`() async {
+        KeychainCacheStore.setTestStoreForTesting(true)
+        defer {
+            CookieHeaderCache.clear(provider: .huggingface)
+            KeychainCacheStore.setTestStoreForTesting(false)
+        }
+        CookieHeaderCache.store(provider: .huggingface, cookieHeader: "session=stale", sourceLabel: "Chrome")
+
+        let webSession = ProviderHTTPTransportStub { request in
+            let url = try #require(request.url)
+            #expect(url.path == "/settings/billing")
+            return Self.response(url: url, body: "expired", statusCode: 401)
+        }
+        let tokenTransport = ProviderHTTPTransportStub { _ in
+            Issue.record("Token strategy must not run while a cookie-refresh failure is in play")
+            throw URLError(.badURL)
+        }
+        let descriptor = HuggingFaceProviderDescriptor.makeDescriptor(transport: tokenTransport, webSession: webSession)
+        let environment = ProviderConfigEnvironment.applyAPIKeyOverride(
+            base: [:],
+            provider: .huggingface,
+            config: ProviderConfig(id: .huggingface, apiKey: "hf_configured"))
+
+        let outcome = await descriptor.fetchPlan.fetchOutcome(
+            context: Self.context(environment: environment, sourceMode: .auto),
+            provider: .huggingface)
+
+        switch outcome.result {
+        case .success:
+            Issue.record("Expected the overall fetch to fail rather than fall back to the token strategy")
+        case let .failure(error):
+            #expect(HuggingFaceBillingError.isCookieRefreshNeeded(error))
+        }
+        // The cache is cleared on a login-required failure so the next user-initiated refresh re-imports.
+        #expect(CookieHeaderCache.load(provider: .huggingface) == nil)
+    }
+
     @Test @MainActor
     func `app availability defaults to true like other optional cookie capable providers`() {
         // Matches Qoder/MiniMax: with a cookie fallback available, this provider no longer hard-requires

@@ -37,8 +37,12 @@ public enum HuggingFaceProviderDescriptor {
         #endif
     }
 
+    /// `webSession` defaults to nil in production so `HuggingFaceBillingPageFetcher` uses its own
+    /// cookie-isolated, redirect-guarded transport instead of the shared client used for API
+    /// calls elsewhere -- only tests should override it, to stub the web strategy's HTTP calls.
     static func makeDescriptor(
-        transport: any ProviderHTTPTransport = ProviderHTTPClient.shared) -> ProviderDescriptor
+        transport: any ProviderHTTPTransport = ProviderHTTPClient.shared,
+        webSession: (any ProviderHTTPTransport)? = nil) -> ProviderDescriptor
     {
         ProviderDescriptor(
             id: .huggingface,
@@ -90,13 +94,13 @@ public enum HuggingFaceProviderDescriptor {
                 pipeline: ProviderFetchPipeline(resolveStrategies: { context in
                     switch context.sourceMode {
                     case .web:
-                        [HuggingFaceWebFetchStrategy()]
+                        [HuggingFaceWebFetchStrategy(session: webSession)]
                     case .api:
                         [Self.apiStrategy(transport: transport)]
                     case .cli, .oauth:
                         []
                     case .auto:
-                        [HuggingFaceWebFetchStrategy(), Self.apiStrategy(transport: transport)]
+                        [HuggingFaceWebFetchStrategy(session: webSession), Self.apiStrategy(transport: transport)]
                     }
                 })),
             cli: ProviderCLIConfig(
@@ -127,6 +131,11 @@ public enum HuggingFaceProviderDescriptor {
 struct HuggingFaceWebFetchStrategy: ProviderFetchStrategy {
     let id: String = "huggingface.web"
     let kind: ProviderFetchKind = .web
+    let session: (any ProviderHTTPTransport)?
+
+    init(session: (any ProviderHTTPTransport)? = nil) {
+        self.session = session
+    }
 
     func isAvailable(_ context: ProviderFetchContext) async -> Bool {
         let cookieSource = context.settings?.huggingface?.cookieSource ?? .auto
@@ -157,6 +166,7 @@ struct HuggingFaceWebFetchStrategy: ProviderFetchStrategy {
             }
             let snapshot = try await HuggingFaceBillingPageFetcher.fetchBilling(
                 cookieHeader: cookieHeader,
+                session: self.session,
                 timeout: context.webTimeout)
             return self.makeResult(usage: snapshot.toUsageSnapshot(), sourceLabel: "web")
         }
@@ -168,6 +178,7 @@ struct HuggingFaceWebFetchStrategy: ProviderFetchStrategy {
             do {
                 let snapshot = try await HuggingFaceBillingPageFetcher.fetchBilling(
                     cookieHeader: cached.cookieHeader,
+                    session: self.session,
                     timeout: context.webTimeout)
                 return self.makeResult(usage: snapshot.toUsageSnapshot(), sourceLabel: "web")
             } catch let error as HuggingFaceBillingError {
@@ -191,6 +202,7 @@ struct HuggingFaceWebFetchStrategy: ProviderFetchStrategy {
             do {
                 let snapshot = try await HuggingFaceBillingPageFetcher.fetchBilling(
                     cookieHeader: session.cookieHeader,
+                    session: self.session,
                     timeout: context.webTimeout)
                 CookieHeaderCache.store(
                     provider: .huggingface,
@@ -212,8 +224,13 @@ struct HuggingFaceWebFetchStrategy: ProviderFetchStrategy {
         throw lastError ?? HuggingFaceBillingError.missingCookie
     }
 
-    func shouldFallback(on _: Error, context _: ProviderFetchContext) -> Bool {
-        true
+    func shouldFallback(on error: Error, context _: ProviderFetchContext) -> Bool {
+        // A cookie that merely needs a fresh user-initiated import must not silently fall back to
+        // the token strategy: that would replace richer (but momentarily stale) web data with
+        // poorer token-only data on every routine background refresh. Any other failure (a real
+        // network/parse/server error) is a genuine data problem, so falling back to the token
+        // path there is still the right degradation.
+        !HuggingFaceBillingError.isCookieRefreshNeeded(error)
     }
 
     private static func manualCookieHeader(context: ProviderFetchContext) -> String? {

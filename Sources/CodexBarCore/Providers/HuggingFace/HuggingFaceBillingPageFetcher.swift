@@ -76,6 +76,25 @@ public enum HuggingFaceBillingError: LocalizedError, Sendable, Equatable {
             "Failed to parse Hugging Face billing page: \(message)"
         }
     }
+
+    /// True when the failure means "the browser cookie needs a fresh user-initiated import", not
+    /// "the underlying account data is unavailable or wrong". Shared by the web fetch strategy
+    /// (so it does not silently fall back to the poorer token-only data source) and by the app's
+    /// refresh-failure handling (so it keeps showing the last good snapshot instead of clearing it).
+    public static func isCookieRefreshNeeded(_ error: Error) -> Bool {
+        if case HuggingFaceBillingError.loginRequired = error {
+            return true
+        }
+        if case HuggingFaceBillingError.missingCookie = error {
+            return true
+        }
+        #if os(macOS)
+        if case HuggingFaceCookieImportError.missingCookie = error {
+            return true
+        }
+        #endif
+        return false
+    }
 }
 
 /// Hugging Face's `/settings/billing` page, fetched with the account's own browser session

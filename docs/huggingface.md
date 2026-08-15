@@ -32,15 +32,19 @@ CodexBar read a browser session. This requires being signed in to huggingface.co
 anywhere except to huggingface.co itself. Manual mode accepts a pasted `Cookie:` header instead. Set it to Off to
 disable browser sign-in entirely and use only the token.
 
-When both are configured, browser sign-in is preferred (it is a strict superset of what the token path reports) and
-falls back to the token automatically if the browser session is missing, expired, or unreadable — the token path
-keeps working exactly as before either way.
+When both are configured, browser sign-in is preferred (it is a strict superset of what the token path reports). The
+token path only steps in when browser sign-in has never produced data yet — for example, right after enabling
+Hugging Face, before the first manual refresh imports a cookie — so you get something useful immediately instead of
+an empty card.
 
 Browser sign-in only (re-)imports a cookie on a user-initiated refresh (matching MiniMax/Qoder), never silently in the
-background. Once your cached cookie expires, background refreshes fail until you click Refresh again — but the last
-known data stays visible (marked stale after the first failed background refresh) instead of disappearing, mirroring
-how Claude's own web-session cookie expiry is handled. Configuring both auth methods avoids this entirely, since a
-failed cookie refresh falls back to the token path instead of just going stale.
+background. Once a session is established, background refreshes deliberately do **not** fall back to the token path
+when the cached cookie goes stale: doing so would silently replace the richer browser-sign-in data (credits
+available, per-model breakdown) with the token path's narrower numbers on every routine background refresh. Instead,
+the last known (browser-sign-in) data stays visible, marked stale after the first failed background refresh, exactly
+like Claude's own web-session cookie expiry — until you click Refresh again, which re-imports a fresh cookie. A
+non-cookie web failure (a real network/parse/server error, not just an expired session) still falls back to the
+token path as usual, since that's a genuine data problem rather than "needs a click."
 
 ## Data Sources
 
