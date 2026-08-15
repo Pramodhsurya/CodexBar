@@ -12,16 +12,16 @@ struct HuggingFaceBillingPageTests {
         let snapshot = try HuggingFaceBillingPageFetcher.parseBillingHTML(Self.billingHTML, now: now)
         let usage = snapshot.toUsageSnapshot()
 
-        #expect(snapshot.currentBalanceUsd == 63.75)
-        #expect(abs(snapshot.usedThisPeriodUsd - 38.241_960_143) < 0.000_001)
-        #expect(snapshot.requestCount == 1786)
+        #expect(snapshot.currentBalanceUsd == 128.4)
+        #expect(snapshot.usedThisPeriodUsd == 9.5)
+        #expect(snapshot.requestCount == 240)
         #expect(snapshot.username == "octocat")
         #expect(snapshot.isPro == true)
         #expect(snapshot.billingMode == "Prepaid")
         #expect(snapshot.includedCreditsUsd == 2)
 
-        #expect(usage.detailRow(label: "Credits available")?.value == "USD 63.75")
-        #expect(usage.detailRow(label: "Credits used")?.value == "USD 38.24")
+        #expect(usage.detailRow(label: "Credits available")?.value == "USD 128.40")
+        #expect(usage.detailRow(label: "Credits used")?.value == "USD 9.50")
         #expect(usage.detailRow(label: "Credits used")?.secondaryValue == "Current period")
         #expect(usage.detailRow(label: "Included credits")?.value == "USD 2.00")
         #expect(usage.detailRow(label: "Plan")?.value == "PRO")
@@ -30,7 +30,7 @@ struct HuggingFaceBillingPageTests {
         #expect(usage.detailRow(label: "Renews")?.secondaryValue == "UTC")
         #expect(usage.subscriptionRenewsAt == snapshot.periodEnd)
         #expect(usage.providerCost?.used == snapshot.usedThisPeriodUsd)
-        #expect(usage.providerCost?.balance == 63.75)
+        #expect(usage.providerCost?.balance == 128.4)
         #expect(usage.identity?.accountID == "octocat")
         #expect(usage.identity?.loginMethod == "PRO")
         #expect(usage.dataConfidence == .exact)
@@ -49,13 +49,13 @@ struct HuggingFaceBillingPageTests {
 
         let snapshot = try HuggingFaceBillingPageFetcher.parseBillingHTML(html)
 
-        #expect(snapshot.currentBalanceUsd == 63.75)
+        #expect(snapshot.currentBalanceUsd == 128.4)
         #expect(snapshot.username == "octocat")
     }
 
     @Test
     func `missing balance field is a parse failure`() {
-        let json = Self.billingJSON.replacingOccurrences(of: #""currentBalanceUsd": 63.75,"#, with: "")
+        let json = Self.billingJSON.replacingOccurrences(of: #""currentBalanceUsd": 128.4,"#, with: "")
         let html = "<main>\(Self.dataPropsElement(json: json))</main>"
 
         #expect(throws: HuggingFaceBillingError.self) {
@@ -172,12 +172,12 @@ struct HuggingFaceBillingPageTests {
             "user": "octocat",
             "isPro": true,
             "billingMode": "prepaid",
-            "currentBalanceUsd": 63.75,
+            "currentBalanceUsd": 128.4,
             "subscriptionIncludedCreditsUsd": 2,
-            "paymentMethod": {"type": "card", "id": "pm_secret123", "last4": "1004"}
+            "paymentMethod": {"type": "card", "id": "pm_secret123", "last4": "4242"}
           },
           "last3periods": [{"periodStart": "2026-08-02T16:00:00.000Z", "periodEnd": "2026-09-01T00:00:00.000Z"}],
-          "usage": {"inference": {"usedNanoUsd": 38241960143, "numRequests": 1786}}
+          "usage": {"inference": {"usedNanoUsd": 9500000000, "numRequests": 240}}
         }
         """
         let html = "<main>\(Self.dataPropsElement(json: json))</main>"
@@ -187,11 +187,11 @@ struct HuggingFaceBillingPageTests {
 
         for section in usage.details {
             for row in section.rows {
-                #expect(!row.value.contains("1004"))
+                #expect(!row.value.contains("4242"))
                 #expect(!row.value.contains("pm_secret123"))
                 #expect(!row.value.lowercased().contains("card"))
                 #expect(!row.value.lowercased().contains("payment"))
-                #expect(row.secondaryValue?.contains("1004") != true)
+                #expect(row.secondaryValue?.contains("4242") != true)
             }
         }
     }
@@ -230,10 +230,10 @@ struct HuggingFaceBillingPageTests {
         "type": "user",
         "canPay": true,
         "billingMode": "prepaid",
-        "currentBalanceUsd": 63.75,
+        "currentBalanceUsd": 128.4,
         "subscriptionIncludedCreditsUsd": 2,
         "subscriptionProductName": "PRO subscription",
-        "paymentMethod": {"type": "card", "id": "pm_redacted", "last4": "1004"},
+        "paymentMethod": {"type": "card", "id": "pm_redacted", "last4": "4242"},
         "billingDetails": {"country": "US"}
       },
       "last3periods": [{
@@ -248,10 +248,10 @@ struct HuggingFaceBillingPageTests {
       "usage": {
         "storage": {},
         "inference": {
-          "usedNanoUsd": 38241960143,
-          "numRequests": 1786,
+          "usedNanoUsd": 9500000000,
+          "numRequests": 240,
           "providerDetails": [
-            {"provider": "together", "numRequests": 312, "totalCostNanoUsd": 18486998920, "totalDurationMs": 2618852.27}
+            {"provider": "together", "numRequests": 40, "totalCostNanoUsd": 4500000000, "totalDurationMs": 500000.0}
           ]
         },
         "jobs": {},
@@ -260,7 +260,7 @@ struct HuggingFaceBillingPageTests {
       },
       "bandwidth": {},
       "isMetronomeContractualCustomer": false,
-      "paymentMethod": {"type": "card", "id": "pm_redacted", "last4": "1004"},
+      "paymentMethod": {"type": "card", "id": "pm_redacted", "last4": "4242"},
       "billingDetails": {"country": "US"}
     }
     """
