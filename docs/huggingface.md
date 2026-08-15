@@ -49,11 +49,17 @@ Token path — official Hub API endpoints, token sent only via the `Authorizatio
 - `GET https://huggingface.co/api/settings/billing/usage-by-inference-session`, bounded by the resolved period start
   through now, for personal Inference Providers request counts and cost.
 
-Browser sign-in path — a single authenticated fetch of `https://huggingface.co/settings/billing` (the account's own
-billing page) using the browser session cookie, either imported automatically or pasted manually. CodexBar parses only
-two figures out of that page: the prepaid credit balance, and the exact current-period Inference Providers usage total
-(the same number huggingface.co itself displays). Payment method and invoicing details present on that page are never
-parsed, stored, or displayed.
+Browser sign-in path — two authenticated page fetches using the browser session cookie, either imported automatically
+or pasted manually:
+
+- `https://huggingface.co/settings/billing` (required for this path). CodexBar parses only two figures out of that
+  page: the prepaid credit balance, and the exact current-period Inference Providers usage total (the same number
+  huggingface.co itself displays). Payment method and invoicing details present on that page are never parsed,
+  stored, or displayed.
+- `https://huggingface.co/settings/inference-providers/overview` (best-effort enrichment). CodexBar parses the
+  per-model usage breakdown from this page — model ID, request count, and accrued cost — the same data behind
+  huggingface.co's own "Models breakdown" table. A failure fetching or parsing this second page never fails the
+  primary billing fetch; the balance and current-period spend from `/settings/billing` remain available on their own.
 
 ## Display
 
@@ -62,6 +68,11 @@ browser sign-in supplied it — credits available. The "Subscription" section sh
 the billing-period end date: "Renews" for PRO accounts (Hugging Face PRO auto-renews and the API exposes no
 cancellation flag to say otherwise), "Billing period ends" for Free accounts (a billing-period boundary, not a
 subscription claim). `subscriptionRenewsAt` (the menu card's "Renews: …" note) is set only for PRO accounts.
+
+When browser sign-in successfully reads the Inference Providers overview page, a "Models" section lists the 8
+highest-cost models by accrued cost this period (model ID, cost, request count) — the per-model equivalent of the
+provider-level `providerDetails` breakdown chart. This section is absent for token-only setups, since HF's token API
+has no per-model breakdown endpoint.
 
 "Exact" means CodexBar exactly aggregates the values the API/page returns; it does not mean the amount is the
 account's net payable invoice. Hugging Face's own billing total can also include Jobs and ZeroGPU overquota usage,

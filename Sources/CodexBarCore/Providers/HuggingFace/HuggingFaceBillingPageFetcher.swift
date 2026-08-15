@@ -41,6 +41,23 @@ struct HuggingFaceBillingPagePayload: Decodable {
     let usage: Usage?
 }
 
+/// Deliberately narrow, same rationale as `HuggingFaceBillingPagePayload`: `authorId` and
+/// `authorAvatarUrl` are present on the real page payload but have no matching property here.
+struct HuggingFaceModelUsagePayload: Decodable {
+    struct Model: Decodable {
+        let modelId: String?
+        let numRequests: Int?
+        let usedNanoUsd: Double?
+        let lastRequestTimestamp: String?
+    }
+
+    struct Metrics: Decodable {
+        let byModels: [Model]?
+    }
+
+    let inferenceUsageMetrics: Metrics?
+}
+
 public enum HuggingFaceBillingError: LocalizedError, Sendable, Equatable {
     case missingCookie
     case loginRequired
@@ -76,6 +93,7 @@ public struct HuggingFaceBillingSnapshot: Sendable {
     public let periodStart: Date?
     public let periodEnd: Date?
     public let providerBreakdown: [(provider: String, usd: Double)]
+    public let modelBreakdown: [(modelId: String, requests: Int, usd: Double)]
     public let updatedAt: Date
 
     public init(
@@ -89,6 +107,7 @@ public struct HuggingFaceBillingSnapshot: Sendable {
         periodStart: Date?,
         periodEnd: Date?,
         providerBreakdown: [(provider: String, usd: Double)] = [],
+        modelBreakdown: [(modelId: String, requests: Int, usd: Double)] = [],
         updatedAt: Date = Date())
     {
         self.username = username
@@ -101,6 +120,7 @@ public struct HuggingFaceBillingSnapshot: Sendable {
         self.periodStart = periodStart
         self.periodEnd = periodEnd
         self.providerBreakdown = providerBreakdown
+        self.modelBreakdown = modelBreakdown
         self.updatedAt = updatedAt
     }
 
@@ -123,11 +143,16 @@ public struct HuggingFaceBillingSnapshot: Sendable {
 
         let isRenewingSubscription = self.isPro && self.periodEnd != nil
 
+        var details = [self.inferenceProvidersSection(), self.subscriptionSection(isRenewing: isRenewingSubscription)]
+        if let modelsSection = self.modelsSection() {
+            details.append(modelsSection)
+        }
+
         return UsageSnapshot(
             primary: nil,
             secondary: nil,
             providerCost: providerCost,
-            details: [self.inferenceProvidersSection(), self.subscriptionSection(isRenewing: isRenewingSubscription)],
+            details: details,
             subscriptionRenewsAt: isRenewingSubscription ? self.periodEnd : nil,
             updatedAt: self.updatedAt,
             identity: identity,
@@ -182,6 +207,24 @@ public struct HuggingFaceBillingSnapshot: Sendable {
         return .makeSection(title: "Subscription", rows: rows)
     }
 
+    /// Caps at the 8 highest-cost models so the menu card stays scannable; Hugging Face's own
+    /// Inference Providers overview page shows a similarly bounded table by default.
+    private static let maxModelRows = 8
+
+    private func modelsSection() -> ProviderDetailSection? {
+        guard !self.modelBreakdown.isEmpty else { return nil }
+        let rows = self.modelBreakdown
+            .sorted { $0.usd > $1.usd }
+            .prefix(Self.maxModelRows)
+            .map {
+                ProviderDetailSection.Row.makeRow(
+                    label: $0.modelId,
+                    value: "USD \(String(format: "%.2f", $0.usd))",
+                    secondaryValue: "\(Self.countString($0.requests)) requests")
+            }
+        return .makeSection(title: "Models", rows: rows)
+    }
+
     private static func countString(_ value: Int) -> String {
         value.formatted(.number.grouping(.automatic).locale(Locale(identifier: "en_US")))
     }
@@ -197,6 +240,7 @@ public struct HuggingFaceBillingSnapshot: Sendable {
 
 public enum HuggingFaceBillingPageFetcher {
     private static let billingURL = URL(string: "https://huggingface.co/settings/billing")!
+    private static let modelUsageURL = URL(string: "https://huggingface.co/settings/inference-providers/overview")!
     private static let defaultTransport: ProviderHTTPClient = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = nil
@@ -240,7 +284,70 @@ public enum HuggingFaceBillingPageFetcher {
         guard let html = String(data: response.data, encoding: .utf8), !html.isEmpty else {
             throw HuggingFaceBillingError.parseFailed("Billing page response was empty.")
         }
-        return try self.parseBillingHTML(html, now: now)
+        let snapshot = try self.parseBillingHTML(html, now: now)
+        let modelBreakdown = await self.fetchModelBreakdown(
+            cookieHeader: cookieHeader,
+            transport: transport,
+            timeout: timeout)
+        guard !modelBreakdown.isEmpty else { return snapshot }
+        return HuggingFaceBillingSnapshot(
+            username: snapshot.username,
+            isPro: snapshot.isPro,
+            billingMode: snapshot.billingMode,
+            currentBalanceUsd: snapshot.currentBalanceUsd,
+            includedCreditsUsd: snapshot.includedCreditsUsd,
+            usedThisPeriodUsd: snapshot.usedThisPeriodUsd,
+            requestCount: snapshot.requestCount,
+            periodStart: snapshot.periodStart,
+            periodEnd: snapshot.periodEnd,
+            providerBreakdown: snapshot.providerBreakdown,
+            modelBreakdown: modelBreakdown,
+            updatedAt: snapshot.updatedAt)
+    }
+
+    /// Best-effort enrichment: the per-model breakdown lives on a separate settings page. A
+    /// failure here (network error, unexpected shape, or a session that can't reach this specific
+    /// page) never fails the primary billing fetch -- balance and current-period spend are the
+    /// core, historically-supported contract of this fetcher.
+    private static func fetchModelBreakdown(
+        cookieHeader: String,
+        transport: any ProviderHTTPTransport,
+        timeout: TimeInterval) async -> [(modelId: String, requests: Int, usd: Double)]
+    {
+        var request = URLRequest(url: self.modelUsageURL)
+        request.httpMethod = "GET"
+        request.timeoutInterval = timeout
+        request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
+        request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+        request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+
+        guard let response = try? await transport.response(for: request),
+              response.statusCode == 200,
+              response.response.url?.scheme?.lowercased() == "https",
+              response.response.url?.host?.lowercased() == self.modelUsageURL.host?.lowercased(),
+              let html = String(data: response.data, encoding: .utf8), !html.isEmpty
+        else {
+            return []
+        }
+        return self.parseModelBreakdown(html)
+    }
+
+    static func parseModelBreakdown(_ html: String) -> [(modelId: String, requests: Int, usd: Double)] {
+        let decoder = JSONDecoder()
+        for candidate in self.dataPropsCandidates(in: html) {
+            let decoded = self.decodeHTMLEntities(candidate)
+            guard let data = decoded.data(using: .utf8),
+                  let payload = try? decoder.decode(HuggingFaceModelUsagePayload.self, from: data),
+                  let models = payload.inferenceUsageMetrics?.byModels, !models.isEmpty
+            else {
+                continue
+            }
+            return models.compactMap { model in
+                guard let modelId = model.modelId, let usedNanoUsd = model.usedNanoUsd else { return nil }
+                return (modelId: modelId, requests: model.numRequests ?? 0, usd: usedNanoUsd / 1_000_000_000.0)
+            }
+        }
+        return []
     }
 
     /// The page embeds its data as one or more HTML-entity-escaped JSON blobs in `data-props="..."`

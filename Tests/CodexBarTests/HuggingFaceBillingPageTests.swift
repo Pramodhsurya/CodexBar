@@ -196,6 +196,123 @@ struct HuggingFaceBillingPageTests {
         }
     }
 
+    @Test
+    func `fetch enriches the snapshot with a model breakdown from the overview page`() async throws {
+        let transport = ProviderHTTPTransportStub { request in
+            switch request.url?.path {
+            case "/settings/billing":
+                return (Data(Self.billingHTML.utf8), Self.response(statusCode: 200, url: request.url))
+            case "/settings/inference-providers/overview":
+                return (Data(Self.modelUsageHTML.utf8), Self.response(statusCode: 200, url: request.url))
+            default:
+                Issue.record("Unexpected request path: \(request.url?.path ?? "nil")")
+                throw URLError(.badURL)
+            }
+        }
+
+        let snapshot = try await HuggingFaceBillingPageFetcher.fetchBilling(
+            cookieHeader: "session=abc",
+            session: transport)
+        let usage = snapshot.toUsageSnapshot()
+
+        #expect(await transport.requests().count == 2)
+        let requests = await transport.requests()
+        #expect(requests.last?.url?.path == "/settings/inference-providers/overview")
+        #expect(requests.last?.value(forHTTPHeaderField: "Cookie") == "session=abc")
+
+        #expect(usage.details.last?.title == "Models")
+        let modelRows = try #require(usage.details.last?.rows)
+        #expect(modelRows.count == 3)
+        #expect(modelRows.first?.label == "acme/big-model")
+        #expect(modelRows.first?.value == "USD 12.00")
+        #expect(modelRows.first?.secondaryValue == "500 requests")
+        // Sorted by cost descending, not by input order or request count.
+        #expect(modelRows.map(\.label) == ["acme/big-model", "acme/mid-model", "acme/small-model"])
+    }
+
+    @Test
+    func `model breakdown caps at the eight highest cost models`() async throws {
+        let models = (1...10).map { index in
+            #"{"modelId":"acme/model-\#(index)","numRequests":\#(index),"usedNanoUsd":\#(index * 1_000_000_000)}"#
+        }.joined(separator: ",")
+        let json = #"{"inferenceUsageMetrics":{"byModels":[\#(models)]}}"#
+        let html = "<main>\(Self.dataPropsElement(json: json))</main>"
+
+        let breakdown = HuggingFaceBillingPageFetcher.parseModelBreakdown(html)
+
+        #expect(breakdown.count == 10)
+
+        let transport = ProviderHTTPTransportStub { request in
+            switch request.url?.path {
+            case "/settings/billing":
+                return (Data(Self.billingHTML.utf8), Self.response(statusCode: 200, url: request.url))
+            case "/settings/inference-providers/overview":
+                return (Data(html.utf8), Self.response(statusCode: 200, url: request.url))
+            default:
+                Issue.record("Unexpected request path: \(request.url?.path ?? "nil")")
+                throw URLError(.badURL)
+            }
+        }
+        let snapshot = try await HuggingFaceBillingPageFetcher.fetchBilling(
+            cookieHeader: "session=abc",
+            session: transport)
+        let usage = snapshot.toUsageSnapshot()
+
+        let modelRows = try #require(usage.details.last?.rows)
+        #expect(modelRows.count == 8)
+        #expect(modelRows.first?.label == "acme/model-10")
+    }
+
+    @Test
+    func `overview page failure does not fail the primary billing fetch`() async throws {
+        let transport = ProviderHTTPTransportStub { request in
+            switch request.url?.path {
+            case "/settings/billing":
+                return (Data(Self.billingHTML.utf8), Self.response(statusCode: 200, url: request.url))
+            case "/settings/inference-providers/overview":
+                return (Data("boom".utf8), Self.response(statusCode: 500, url: request.url))
+            default:
+                Issue.record("Unexpected request path: \(request.url?.path ?? "nil")")
+                throw URLError(.badURL)
+            }
+        }
+
+        let snapshot = try await HuggingFaceBillingPageFetcher.fetchBilling(
+            cookieHeader: "session=abc",
+            session: transport)
+        let usage = snapshot.toUsageSnapshot()
+
+        #expect(snapshot.modelBreakdown.isEmpty)
+        #expect(usage.details.map(\.title) == ["Inference Providers", "Subscription"])
+    }
+
+    @Test
+    func `model breakdown ignores entries missing an id or cost`() {
+        let json = """
+        {"inferenceUsageMetrics":{"byModels":[
+          {"modelId":"acme/valid","numRequests":10,"usedNanoUsd":1000000000},
+          {"numRequests":5,"usedNanoUsd":2000000000},
+          {"modelId":"acme/no-cost","numRequests":3}
+        ]}}
+        """
+        let html = "<main>\(Self.dataPropsElement(json: json))</main>"
+
+        let breakdown = HuggingFaceBillingPageFetcher.parseModelBreakdown(html)
+
+        #expect(breakdown.count == 1)
+        #expect(breakdown.first?.modelId == "acme/valid")
+    }
+
+    private static let modelUsageHTML = """
+    <main>\(dataPropsElement(json: #"""
+    {"inferenceUsageMetrics":{"byModels":[
+      {"modelId":"acme/small-model","numRequests":10,"usedNanoUsd":500000000},
+      {"modelId":"acme/big-model","numRequests":500,"usedNanoUsd":12000000000},
+      {"modelId":"acme/mid-model","numRequests":100,"usedNanoUsd":3000000000}
+    ]}}
+    """#))</main>
+    """
+
     private static func response(statusCode: Int, url: URL? = nil) -> URLResponse {
         HTTPURLResponse(
             url: url ?? URL(string: "https://huggingface.co/settings/billing")!,
