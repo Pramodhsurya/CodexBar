@@ -36,6 +36,12 @@ When both are configured, browser sign-in is preferred (it is a strict superset 
 falls back to the token automatically if the browser session is missing, expired, or unreadable — the token path
 keeps working exactly as before either way.
 
+Browser sign-in only (re-)imports a cookie on a user-initiated refresh (matching MiniMax/Qoder), never silently in the
+background. Once your cached cookie expires, background refreshes fail until you click Refresh again — but the last
+known data stays visible (marked stale after the first failed background refresh) instead of disappearing, mirroring
+how Claude's own web-session cookie expiry is handled. Configuring both auth methods avoids this entirely, since a
+failed cookie refresh falls back to the token path instead of just going stale.
+
 ## Data Sources
 
 Token path — official Hub API endpoints, token sent only via the `Authorization: Bearer` header:
@@ -73,6 +79,10 @@ When browser sign-in successfully reads the Inference Providers overview page, a
 highest-cost models by accrued cost this period (model ID, cost, request count) — the per-model equivalent of the
 provider-level `providerDetails` breakdown chart. This section is absent for token-only setups, since HF's token API
 has no per-model breakdown endpoint.
+
+The "By provider" bar chart (like all bar/line charts built from a generic `ProviderDetailSection.Chart`, shared with
+Claude Admin API, Groq, MiniMax, DeepSeek, and ZoomMate) supports hovering a bar to see its exact label and value in a
+small detail line below the chart — this is a shared menu-rendering capability, not Hugging-Face-specific.
 
 "Exact" means CodexBar exactly aggregates the values the API/page returns; it does not mean the amount is the
 account's net payable invoice. Hugging Face's own billing total can also include Jobs and ZeroGPU overquota usage,

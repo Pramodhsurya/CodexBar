@@ -57,6 +57,7 @@ private struct ProviderDetailChartContent: View {
     let chart: ProviderDetailSection.Chart
     let color: Color
     @Environment(\.menuItemHighlighted) private var isHighlighted
+    @State private var hoveredIndex: Int?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -87,7 +88,43 @@ private struct ProviderDetailChartContent: View {
             .frame(height: 58)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(self.accessibilityLabel)
+            .overlay {
+                GeometryReader { geometry in
+                    MouseLocationReader { location in
+                        self.updateHover(location: location, width: geometry.size.width)
+                    }
+                    .contentShape(Rectangle())
+                }
+            }
+
+            Text(self.hoverDetailText)
+                .font(.caption2)
+                .foregroundStyle(MenuHighlightStyle.secondary(self.isHighlighted))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(height: 12, alignment: .leading)
+                .opacity(self.hoveredIndex == nil ? 0 : 1)
         }
+    }
+
+    private func updateHover(location: CGPoint?, width: CGFloat) {
+        guard let location, width > 0, location.x >= 0, location.x <= width, !self.chart.points.isEmpty else {
+            if self.hoveredIndex != nil { self.hoveredIndex = nil }
+            return
+        }
+        let slotWidth = width / CGFloat(self.chart.points.count)
+        let index = min(self.chart.points.count - 1, max(0, Int(location.x / slotWidth)))
+        if self.hoveredIndex != index {
+            self.hoveredIndex = index
+        }
+    }
+
+    private var hoverDetailText: String {
+        guard let hoveredIndex, self.chart.points.indices.contains(hoveredIndex) else { return " " }
+        let point = self.chart.points[hoveredIndex]
+        let unit = self.chart.unit.map { " \($0)" } ?? ""
+        let value = point.value.formatted(.number.precision(.fractionLength(0...2)))
+        return "\(point.label): \(value)\(unit)"
     }
 
     private var bars: some View {

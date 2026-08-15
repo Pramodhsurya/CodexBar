@@ -1417,6 +1417,20 @@ extension UsageStore {
                 self.errors[provider.instanceID] = nil
                 return
             }
+            // Provider-specific by design: Hugging Face's browser cookie import only runs on a
+            // user-initiated refresh (matches MiniMax/Qoder), so a background refresh with an
+            // expired cached cookie is an expected "needs a manual Refresh" state, not evidence
+            // the last data is wrong -- mirrors the Claude web-session carve-out just above.
+            let preservesHuggingFaceCookieFailure =
+                provider == .huggingface &&
+                hadPriorData &&
+                Self.isHuggingFaceCookieRefreshFailure(error)
+            if preservesHuggingFaceCookieFailure,
+               !shouldSurface
+            {
+                self.errors[provider.instanceID] = nil
+                return
+            }
             if provider == .claude,
                preservesPriorData,
                Self.isClaudeUsageProbeTimeout(error) || Self.isClaudeCLIRateLimitFailure(error)
@@ -1430,7 +1444,7 @@ extension UsageStore {
             }
             if shouldSurface {
                 self.errors[provider.instanceID] = error.localizedDescription
-                if !preservesPriorData, !preservesClaudeWebSessionFailure {
+                if !preservesPriorData, !preservesClaudeWebSessionFailure, !preservesHuggingFaceCookieFailure {
                     self.snapshots.removeValue(forKey: provider.instanceID)
                     if Self.tokenCostRequiresProviderSnapshot(provider) {
                         self.clearTokenSnapshot(for: provider)
